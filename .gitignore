@@ -1,0 +1,47 @@
+# Personal project notes
+Mission.md
+notes.md
+
+# Uploaded videos, extracted frames, and temporary query files
+backend/storage/
+
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Python build and package artifacts
+build/
+dist/
+*.egg-info/
+
+# Frontend dependencies and generated builds
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Generated evaluation output (keep manifests and scripts)
+evaluation/results/
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
