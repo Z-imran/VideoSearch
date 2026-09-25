@@ -6,7 +6,7 @@ def _add_media_urls(rows):
     return [
         {
             **row,
-            "thumbnail_url": f"/media/frames/{row['id']}",
+            "thumbnail_url": f"/media/frames/{row.get('thumbnail_frame_id', row['id'])}",
             "video_url": f"/media/videos/{row['video_id']}",
         }
         for row in rows

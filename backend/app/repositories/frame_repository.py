@@ -45,14 +45,41 @@ def update_frame_embedding(frame_id, embedding: list[float]):
         
 def search_by_embedding(embedding: list[float], top_k: int = 10):
     query = """
-        SELECT frames.id, frames.video_id, frames.timestamp_seconds,
-               videos.title AS video_title,
-               1 - (embedding <=> %(embedding)s::vector) AS similarity
-        FROM frames
-        JOIN videos ON videos.id = frames.video_id
-        WHERE embedding IS NOT NULL AND videos.status = 'ready'
-        ORDER BY embedding <=> %(embedding)s::vector
-        LIMIT %(top_k)s;
+        WITH ranked_matches AS (
+            SELECT frames.id AS matched_frame_id,
+                   frames.video_id,
+                   frames.timestamp_seconds AS matched_timestamp_seconds,
+                   videos.title AS video_title,
+                   1 - (embedding <=> %(embedding)s::vector) AS similarity
+            FROM frames
+            JOIN videos ON videos.id = frames.video_id
+            WHERE embedding IS NOT NULL AND videos.status = 'ready'
+            ORDER BY embedding <=> %(embedding)s::vector
+            LIMIT %(top_k)s
+        )
+        SELECT ranked_matches.matched_frame_id AS id,
+               COALESCE(
+                   previous_frame.id,
+                   ranked_matches.matched_frame_id
+               ) AS thumbnail_frame_id,
+               ranked_matches.video_id,
+               COALESCE(
+                   previous_frame.timestamp_seconds,
+                   ranked_matches.matched_timestamp_seconds
+               ) AS timestamp_seconds,
+               ranked_matches.matched_timestamp_seconds,
+               ranked_matches.video_title,
+               ranked_matches.similarity
+        FROM ranked_matches
+        LEFT JOIN LATERAL (
+            SELECT frames.id, frames.timestamp_seconds
+            FROM frames
+            WHERE frames.video_id = ranked_matches.video_id
+              AND frames.timestamp_seconds < ranked_matches.matched_timestamp_seconds
+            ORDER BY frames.timestamp_seconds DESC
+            LIMIT 1
+        ) AS previous_frame ON TRUE
+        ORDER BY ranked_matches.similarity DESC;
     """
     with get_connection() as connection:
         with connection.cursor() as cursor:

@@ -221,7 +221,7 @@ function App() {
               {results.map((result, index) => (
                 <button className="result-card" key={result.id} type="button" onClick={() => setSelectedMoment(result)}>
                   <div className="thumbnail-wrap"><img src={`${API_BASE}${result.thumbnail_url}`} alt={`Frame from ${result.video_title}`} /><span className="timestamp">{formatDuration(result.timestamp_seconds)}</span><span className="rank">#{index + 1}</span></div>
-                  <div className="result-copy"><strong>{result.video_title}</strong><span>Similarity {Number(result.similarity).toFixed(3)}</span></div>
+                  <div className="result-copy"><strong>{result.video_title}</strong><span>Similarity {Number(result.similarity).toFixed(3)} · matched {formatDuration(result.matched_timestamp_seconds)}</span></div>
                 </button>
               ))}
             </div>
