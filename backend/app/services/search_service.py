@@ -3,14 +3,14 @@ from app.repositories.frame_repository import search_by_embedding
 
 
 def _add_media_urls(rows):
-    return [
-        {
-            **row,
-            "thumbnail_url": f"/media/frames/{row.get('thumbnail_frame_id', row['id'])}",
-            "video_url": f"/media/videos/{row['video_id']}",
-        }
-        for row in rows
-    ]
+    results = []
+    for row in rows:
+        result = dict(row)
+        thumbnail_frame_id = result.pop("thumbnail_frame_id", result["id"])
+        result["thumbnail_url"] = f"/media/frames/{thumbnail_frame_id}"
+        result["video_url"] = f"/media/videos/{result['video_id']}"
+        results.append(result)
+    return results
 
 
 def search_by_text_query(query: str, top_k: int = 10):

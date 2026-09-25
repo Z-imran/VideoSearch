@@ -67,7 +67,6 @@ def search_by_embedding(embedding: list[float], top_k: int = 10):
                    previous_frame.timestamp_seconds,
                    ranked_matches.matched_timestamp_seconds
                ) AS timestamp_seconds,
-               ranked_matches.matched_timestamp_seconds,
                ranked_matches.video_title,
                ranked_matches.similarity
         FROM ranked_matches
