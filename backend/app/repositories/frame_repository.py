@@ -24,6 +24,14 @@ def list_frames_for_video(video_id):
         with connection.cursor() as cursor:
             cursor.execute(query, {"video_id": video_id})
             return cursor.fetchall()
+
+
+def get_frame(frame_id):
+    query = "SELECT * FROM frames WHERE id = %(id)s;"
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, {"id": frame_id})
+            return cursor.fetchone()
         
 def update_frame_embedding(frame_id, embedding: list[float]):
     query = "UPDATE frames SET embedding = %(embedding)s WHERE id = %(id)s RETURNING *;"
@@ -37,12 +45,12 @@ def update_frame_embedding(frame_id, embedding: list[float]):
         
 def search_by_embedding(embedding: list[float], top_k: int = 10):
     query = """
-        SELECT frames.id, frames.video_id, frames.timestamp_seconds, frames.thumbnail_path,
+        SELECT frames.id, frames.video_id, frames.timestamp_seconds,
                videos.title AS video_title,
                1 - (embedding <=> %(embedding)s::vector) AS similarity
         FROM frames
         JOIN videos ON videos.id = frames.video_id
-        WHERE embedding IS NOT NULL
+        WHERE embedding IS NOT NULL AND videos.status = 'ready'
         ORDER BY embedding <=> %(embedding)s::vector
         LIMIT %(top_k)s;
     """
