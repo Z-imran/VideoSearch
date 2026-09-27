@@ -2,34 +2,62 @@ from uuid import uuid4
 
 from app.db.connection import get_connection
 
+
+class TemporaryVideoLimitReached(Exception):
+    pass
+
 # Following a Repositroy pattern so we can easily test, make changes, and reuse things if needed
-def create_video(title: str, source_type: str, original_filename: str | None):
+def create_temporary_video(
+    title: str,
+    source_type: str,
+    original_filename: str | None,
+    expires_at,
+    max_temporary_videos: int,
+):
     video_id = uuid4()
 
-    query = """
-        INSERT INTO videos (id, title, source_type, original_filename)
-        VALUES (%(id)s, %(title)s, %(source_type)s, %(original_filename)s)
-        RETURNING *;
-    """
     values = {
         "id": video_id,
         "title": title,
         "source_type": source_type,
         "original_filename": original_filename,
+        "expires_at": expires_at,
+        "max_temporary_videos": max_temporary_videos,
     }
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(81924571);")
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM videos
+                WHERE expires_at IS NOT NULL
+                  AND expires_at > NOW()
+                  AND status <> 'failed';
+                """
+            )
+            if cursor.fetchone()["count"] >= max_temporary_videos:
+                raise TemporaryVideoLimitReached
+            cursor.execute(
+                """
+                INSERT INTO videos (id, title, source_type, original_filename, expires_at)
+                VALUES (%(id)s, %(title)s, %(source_type)s, %(original_filename)s, %(expires_at)s)
+                RETURNING *;
+                """,
+                values,
+            )
+            row = cursor.fetchone()
+            connection.commit()
+            return row
 
-    connection = get_connection()
-    cursor = connection.cursor()
-    cursor.execute(query, values)
-    row = cursor.fetchone()
-    connection.commit()
-    cursor.close()
-    connection.close()
-    return row
 
-
-def list_videos():
-    query = "SELECT * FROM videos ORDER BY created_at DESC;"
+def list_ready_videos():
+    query = """
+        SELECT * FROM videos
+        WHERE status = 'ready'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY created_at DESC;
+    """
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(query)
@@ -37,7 +65,11 @@ def list_videos():
 
 
 def get_video(video_id):
-    query = "SELECT * FROM videos WHERE id = %(id)s;"
+    query = """
+        SELECT * FROM videos
+        WHERE id = %(id)s
+          AND (expires_at IS NULL OR expires_at > NOW());
+    """
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(query, {"id": video_id})
@@ -61,3 +93,36 @@ def update_video_duration(video_id, duration_seconds):
             row = cursor.fetchone()
             connection.commit()
             return row
+
+
+def mark_video_failed(video_id):
+    query = """
+        UPDATE videos
+        SET status = 'failed',
+            expires_at = LEAST(expires_at, NOW() + INTERVAL '1 hour'),
+            updated_at = NOW()
+        WHERE id = %(id)s
+        RETURNING *;
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, {"id": video_id})
+            row = cursor.fetchone()
+            connection.commit()
+            return row
+
+
+def list_expired_videos():
+    query = "SELECT id FROM videos WHERE expires_at IS NOT NULL AND expires_at <= NOW();"
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query)
+            return cursor.fetchall()
+
+
+def delete_video(video_id):
+    query = "DELETE FROM videos WHERE id = %(id)s;"
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, {"id": video_id})
+            connection.commit()

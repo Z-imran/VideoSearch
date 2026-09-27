@@ -27,7 +27,13 @@ def list_frames_for_video(video_id):
 
 
 def get_frame(frame_id):
-    query = "SELECT * FROM frames WHERE id = %(id)s;"
+    query = """
+        SELECT frames.*
+        FROM frames
+        JOIN videos ON videos.id = frames.video_id
+        WHERE frames.id = %(id)s
+          AND (videos.expires_at IS NULL OR videos.expires_at > NOW());
+    """
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(query, {"id": frame_id})
@@ -53,7 +59,9 @@ def search_by_embedding(embedding: list[float], top_k: int = 10):
                    1 - (embedding <=> %(embedding)s::vector) AS similarity
             FROM frames
             JOIN videos ON videos.id = frames.video_id
-            WHERE embedding IS NOT NULL AND videos.status = 'ready'
+            WHERE embedding IS NOT NULL
+              AND videos.status = 'ready'
+              AND (videos.expires_at IS NULL OR videos.expires_at > NOW())
             ORDER BY embedding <=> %(embedding)s::vector
             LIMIT %(top_k)s
         )

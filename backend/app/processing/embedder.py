@@ -14,6 +14,13 @@ def _load():
     return _model, _preprocess, _tokenizer
 
 
+def warmup() -> None:
+    model, _, tokenizer = _load()
+    tokens = tokenizer(["video search ready"])
+    with torch.inference_mode():
+        model.encode_text(tokens)
+
+
 def embed_image(image_path: str) -> list[float]:
     model, preprocess, _ = _load()
     image = preprocess(Image.open(image_path).convert("RGB")).unsqueeze(0)

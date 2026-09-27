@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const MAX_QUERY_IMAGE_DIMENSION = 1600
+const QUERY_IMAGE_QUALITY = 0.85
 
 async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, options)
@@ -25,12 +27,33 @@ function formatDuration(seconds) {
   return `${minutes}:${String(total % 60).padStart(2, '0')}`
 }
 
+async function resizeQueryImage(file) {
+  const image = await createImageBitmap(file)
+  const scale = Math.min(1, MAX_QUERY_IMAGE_DIMENSION / Math.max(image.width, image.height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(image.width * scale))
+  canvas.height = Math.max(1, Math.round(image.height * scale))
+  const context = canvas.getContext('2d')
+  context.fillStyle = '#ffffff'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  image.close()
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', QUERY_IMAGE_QUALITY))
+  if (!blob) throw new Error('The selected image could not be prepared for search.')
+  const filename = `${file.name.replace(/\.[^.]+$/, '') || 'query'}.jpg`
+  return new File([blob], filename, { type: 'image/jpeg' })
+}
+
 function App() {
-  const [apiOnline, setApiOnline] = useState(null)
+  const [serviceStatus, setServiceStatus] = useState('checking')
+  const [uploadPolicy, setUploadPolicy] = useState({ uploads_enabled: true })
   const [videos, setVideos] = useState([])
   const [videoError, setVideoError] = useState('')
   const [uploading, setUploading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState('')
+  const [uploadMessageType, setUploadMessageType] = useState('info')
+  const [uploadJob, setUploadJob] = useState(null)
   const [searchMode, setSearchMode] = useState('text')
   const [query, setQuery] = useState('')
   const [queryImage, setQueryImage] = useState(null)
@@ -46,34 +69,80 @@ function App() {
       const data = await apiRequest('/videos')
       setVideos(data)
       setVideoError('')
-      setApiOnline(true)
+      return true
     } catch (error) {
       setVideoError(error.message)
-      setApiOnline(false)
+      setServiceStatus('offline')
+      return false
     }
   }, [])
 
   useEffect(() => {
-    async function initialize() {
+    let cancelled = false
+    let failedChecks = 0
+    let catalogueLoaded = false
+    let timer
+
+    async function checkService() {
       try {
-        await apiRequest('/health')
-        setApiOnline(true)
-        await loadVideos()
+        const health = await apiRequest('/health')
+        if (cancelled) return
+        failedChecks = 0
+        setUploadPolicy(health)
+        setServiceStatus('ready')
+        if (!catalogueLoaded) catalogueLoaded = await loadVideos()
+        if (!cancelled) timer = window.setTimeout(checkService, 15000)
       } catch {
-        setApiOnline(false)
+        if (cancelled) return
+        failedChecks += 1
+        setServiceStatus((current) => current === 'ready' || failedChecks >= 3 ? 'offline' : 'warming')
+        timer = window.setTimeout(checkService, 2000)
       }
     }
-    initialize()
+
+    checkService()
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [loadVideos])
 
   useEffect(() => {
-    const hasActiveJob = videos.some((video) =>
-      ['pending', 'processing'].includes(video.status),
-    )
-    if (!hasActiveJob) return undefined
-    const timer = window.setInterval(loadVideos, 2000)
-    return () => window.clearInterval(timer)
-  }, [videos, loadVideos])
+    if (!uploadJob) return undefined
+    let cancelled = false
+
+    async function checkUpload() {
+      try {
+        const video = await apiRequest(`/videos/${uploadJob.id}`)
+        if (cancelled) return
+        if (video.status === 'ready') {
+          setUploadMessageType('success')
+          setUploadMessage(`“${video.title}” is ready to search.`)
+          setUploadJob(null)
+          await loadVideos()
+        } else if (video.status === 'failed') {
+          setUploadMessageType('error')
+          setUploadMessage(`“${video.title}” could not be processed. Try a shorter MP4, MOV, AVI, or WebM video.`)
+          setUploadJob(null)
+        } else {
+          setUploadMessageType('info')
+          setUploadMessage(`Preparing “${video.title}” for search…`)
+        }
+      } catch (error) {
+        if (cancelled) return
+        setUploadMessageType('error')
+        setUploadMessage(error.message)
+        setUploadJob(null)
+      }
+    }
+
+    checkUpload()
+    const timer = window.setInterval(checkUpload, 2000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [uploadJob, loadVideos])
 
   useEffect(() => {
     if (!selectedMoment || !playerRef.current) return
@@ -92,6 +161,12 @@ function App() {
     const form = event.currentTarget
     const file = form.elements.video.files[0]
     if (!file) return
+    const maxVideoBytes = uploadPolicy.max_video_bytes || 100 * 1024 * 1024
+    if (file.size > maxVideoBytes) {
+      setUploadMessageType('error')
+      setUploadMessage('Video exceeds the 100 MB upload limit.')
+      return
+    }
 
     const payload = new FormData()
     payload.append('file', file)
@@ -99,12 +174,14 @@ function App() {
 
     setUploading(true)
     setUploadMessage('')
+    setUploadMessageType('info')
     try {
       const video = await apiRequest('/videos', { method: 'POST', body: payload })
-      setUploadMessage(`“${video.title}” was accepted and is being indexed.`)
+      setUploadJob({ id: video.id, title: video.title })
+      setUploadMessage(`Preparing “${video.title}” for search…`)
       form.reset()
-      await loadVideos()
     } catch (error) {
+      setUploadMessageType('error')
       setUploadMessage(error.message)
     } finally {
       setUploading(false)
@@ -113,26 +190,29 @@ function App() {
 
   async function handleSearch(event) {
     event.preventDefault()
-    const payload = new FormData()
     if (searchMode === 'text') {
       if (!query.trim()) {
         setSearchError('Enter a description to search for.')
         return
       }
-      payload.append('query', query.trim())
     } else {
       if (!queryImage) {
         setSearchError('Choose an image to search with.')
         return
       }
-      payload.append('file', queryImage)
     }
-    payload.append('top_k', String(topK))
 
     setSearching(true)
     setSearchError('')
     setResults([])
     try {
+      const payload = new FormData()
+      if (searchMode === 'text') {
+        payload.append('query', query.trim())
+      } else {
+        payload.append('file', await resizeQueryImage(queryImage))
+      }
+      payload.append('top_k', String(topK))
       const path = searchMode === 'text' ? '/search/text' : '/search/image'
       setResults(await apiRequest(path, { method: 'POST', body: payload }))
     } catch (error) {
@@ -142,10 +222,14 @@ function App() {
     }
   }
 
-  const counts = videos.reduce(
-    (summary, video) => ({ ...summary, [video.status]: (summary[video.status] || 0) + 1 }),
-    {},
-  )
+  const serviceLabel = {
+    checking: 'Starting search',
+    warming: 'Preparing search',
+    ready: 'Ready',
+    offline: 'Unavailable',
+  }[serviceStatus]
+  const serviceReady = serviceStatus === 'ready'
+  const uploadsAvailable = uploadPolicy.uploads_enabled !== false
 
   return (
     <div className="app-shell">
@@ -153,41 +237,31 @@ function App() {
         <a className="brand" href="#top" aria-label="VideoSearch home">
           <span className="brand-mark">VS</span><span>VideoSearch</span>
         </a>
-        <div className={`api-status ${apiOnline ? 'online' : apiOnline === false ? 'offline' : ''}`}>
+        <div className={`api-status ${serviceStatus}`}>
           <span className="status-dot" />
-          {apiOnline === null ? 'Checking API' : apiOnline ? 'Local API online' : 'API offline'}
+          {serviceLabel}
         </div>
       </header>
 
       <main id="top">
         <section className="hero-section">
-          <div className="eyebrow">Semantic video retrieval</div>
+          <div className="eyebrow">Find moments faster</div>
           <h1>Search inside video,<br />not just around it.</h1>
-          <p>Upload a clip, let CLIP and pgvector index its visual moments, then find the right timestamp with natural language or an example image.</p>
-          <div className="pipeline" aria-label="Processing pipeline">
-            <span>Video</span><b>→</b><span>ffmpeg</span><b>→</b><span>CLIP</span><b>→</b><span>pgvector</span>
-          </div>
-        </section>
-
-        <section className="metrics" aria-label="Library summary">
-          <div><strong>{videos.length}</strong><span>Total videos</span></div>
-          <div><strong>{counts.ready || 0}</strong><span>Ready to search</span></div>
-          <div><strong>{(counts.pending || 0) + (counts.processing || 0)}</strong><span>Indexing</span></div>
-          <div><strong>{counts.failed || 0}</strong><span>Failed tests</span></div>
+          <p>Upload a short clip and find its most relevant moments using a description or an example image.</p>
         </section>
 
         <section className="workspace-grid">
           <article className="panel upload-panel">
-            <div className="panel-heading"><span className="step-number">01</span><div><h2>Add a video</h2><p>Index a short clip for semantic search.</p></div></div>
+            <div className="panel-heading"><span className="step-number">01</span><div><h2>Add a video</h2><p>Make a short clip searchable.</p></div></div>
             <form onSubmit={handleUpload}>
               <label>Display title <span>optional</span><input name="title" type="text" maxLength="200" placeholder="Night traffic downtown" /></label>
               <label className="file-drop">
                 <span className="file-icon">＋</span><strong>Choose a video file</strong>
                 <input name="video" type="file" accept="video/mp4,video/quicktime,video/webm,video/x-msvideo" required />
-                <small>MP4, MOV, AVI, or WebM</small>
+                <small>MP4, MOV, AVI, or WebM · Maximum 100 MB and 3 minutes</small>
               </label>
-              <button className="primary-button" type="submit" disabled={uploading || apiOnline === false}>{uploading ? 'Uploading…' : 'Upload and index'}</button>
-              {uploadMessage && <p className="form-message">{uploadMessage}</p>}
+              <button className="primary-button" type="submit" disabled={uploading || Boolean(uploadJob) || !serviceReady || !uploadsAvailable}>{uploading ? 'Uploading…' : uploadJob ? 'Preparing video…' : uploadsAvailable ? 'Upload video' : 'Uploads temporarily disabled'}</button>
+              {uploadMessage && <p className={`form-message ${uploadMessageType}`} aria-live="polite">{uploadMessage}</p>}
             </form>
           </article>
 
@@ -201,11 +275,11 @@ function App() {
               {searchMode === 'text' ? (
                 <label>What are you looking for?<textarea value={query} onChange={(event) => setQuery(event.target.value)} maxLength="200" placeholder="A person riding a bicycle through the city" rows="3" /></label>
               ) : (
-                <label>Example image<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setQueryImage(event.target.files[0] || null)} /></label>
+                <label>Example image<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setQueryImage(event.target.files[0] || null)} /><small className="field-hint">Large images are resized automatically.</small></label>
               )}
               <div className="search-controls">
                 <label>Results<select value={topK} onChange={(event) => setTopK(Number(event.target.value))}>{[5, 8, 10, 15, 20].map((count) => <option key={count}>{count}</option>)}</select></label>
-                <button className="primary-button" type="submit" disabled={searching || apiOnline === false}>{searching ? 'Searching…' : 'Run semantic search'}</button>
+                <button className="primary-button" type="submit" disabled={searching || !serviceReady}>{searching ? 'Searching…' : 'Search videos'}</button>
               </div>
               {searchError && <p className="error-message">{searchError}</p>}
             </form>
@@ -213,14 +287,14 @@ function App() {
         </section>
 
         <section className="section-block" id="results">
-          <div className="section-heading"><div><span className="section-kicker">Ranked retrieval</span><h2>Search results</h2></div><span className="result-count">{results.length ? `${results.length} moments` : 'Waiting for a query'}</span></div>
+          <div className="section-heading"><div><span className="section-kicker">Best matches</span><h2>Search results</h2></div><span className="result-count">{results.length ? `${results.length} moments` : 'Waiting for a query'}</span></div>
           {!results.length && !searching ? (
             <div className="empty-state"><span>⌕</span><p>Your closest matching video moments will appear here.</p></div>
           ) : (
             <div className="results-grid">
               {results.map((result, index) => (
                 <button className="result-card" key={result.id} type="button" onClick={() => setSelectedMoment(result)}>
-                  <div className="thumbnail-wrap"><img src={`${API_BASE}${result.thumbnail_url}`} alt={`Frame from ${result.video_title}`} /><span className="timestamp">{formatDuration(result.timestamp_seconds)}</span><span className="rank">#{index + 1}</span></div>
+                  <div className="thumbnail-wrap"><img loading="lazy" decoding="async" src={`${API_BASE}${result.thumbnail_url}`} alt={`Frame from ${result.video_title}`} /><span className="timestamp">{formatDuration(result.timestamp_seconds)}</span><span className="rank">#{index + 1}</span></div>
                   <div className="result-copy"><strong>{result.video_title}</strong><span>Similarity {Number(result.similarity).toFixed(3)}</span></div>
                 </button>
               ))}
@@ -229,22 +303,23 @@ function App() {
         </section>
 
         <section className="section-block library-section">
-          <div className="section-heading"><div><span className="section-kicker">Indexed collection</span><h2>Video library</h2></div><button className="text-button" type="button" onClick={loadVideos}>Refresh</button></div>
+          <div className="section-heading"><div><span className="section-kicker">Available videos</span><h2>Video library</h2></div><button className="text-button" type="button" onClick={loadVideos}>Refresh</button></div>
           {videoError && <p className="error-message">{videoError}</p>}
           <div className="video-table">
+            {!videos.length && <div className="library-empty">No videos are ready yet.</div>}
             {videos.map((video) => (
               <div className="video-row" key={video.id}>
                 <div className="video-avatar">{video.title.slice(0, 2).toUpperCase()}</div>
-                <div className="video-info"><strong>{video.title}</strong><span>{video.original_filename || 'Uploaded video'}</span></div>
-                <span className={`status-pill ${video.status}`}>{video.status}</span><span className="duration">{formatDuration(video.duration_seconds)}</span>
-                <button className="play-button" type="button" disabled={video.status !== 'ready'} onClick={() => setSelectedMoment({ video_id: video.id, video_title: video.title, video_url: `/media/videos/${video.id}`, timestamp_seconds: 0 })}>Play</button>
+                <div className="video-info"><strong>{video.title}</strong></div>
+                <span className="duration">{formatDuration(video.duration_seconds)}</span>
+                <button className="play-button" type="button" onClick={() => setSelectedMoment({ video_id: video.id, video_title: video.title, video_url: `/media/videos/${video.id}`, timestamp_seconds: 0 })}>Play</button>
               </div>
             ))}
           </div>
         </section>
       </main>
 
-      <footer><span>VideoSearch</span><span>FastAPI · CLIP · PostgreSQL · pgvector · Docker</span></footer>
+      <footer><span>VideoSearch</span><span>Semantic video search demo</span></footer>
 
       {selectedMoment && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setSelectedMoment(null)}>

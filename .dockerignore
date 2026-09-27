@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+!.env.example
+.venv
+**/__pycache__
+**/*.pyc
+backend/storage
+frontend/node_modules
+frontend/dist
+Mission.md
+notes.md

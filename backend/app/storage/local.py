@@ -8,13 +8,29 @@ from uuid import uuid4
 COPY_CHUNK_SIZE = 1024 * 1024
 
 
-def save_upload(video_id: UUID, file: UploadFile) -> str:
+class UploadTooLargeError(ValueError):
+    pass
+
+
+def save_upload(video_id: UUID, file: UploadFile, max_bytes: int) -> str:
     video_dir = pathlib.Path(settings.storage_dir) / str(video_id)
     video_dir.mkdir(parents=True, exist_ok=True)
-    extension = pathlib.Path(file.filename or "").suffix or ".mp4"
+    extension = pathlib.Path(file.filename or "").suffix.lower() or ".mp4"
     destination = video_dir / f"original{extension}"
-    with destination.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    partial = destination.with_suffix(destination.suffix + ".part")
+    total = 0
+    try:
+        with partial.open("wb") as buffer:
+            while chunk := file.file.read(COPY_CHUNK_SIZE):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise UploadTooLargeError("Video exceeds the 100 MB upload limit")
+                buffer.write(chunk)
+        partial.replace(destination)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
+        raise
     return str(destination)
 
 def save_temp_upload(file: UploadFile, max_bytes: int) -> str:
@@ -44,6 +60,15 @@ def delete_storage_file(file_path: str) -> None:
     storage_root = pathlib.Path(settings.storage_dir).resolve()
     if path.is_relative_to(storage_root):
         path.unlink(missing_ok=True)
+
+
+def delete_video_files(video_id: UUID | str) -> None:
+    storage_root = pathlib.Path(settings.storage_dir).resolve()
+    video_dir = (storage_root / str(video_id)).resolve()
+    if video_dir.parent != storage_root:
+        raise ValueError("Refusing to delete a path outside video storage")
+    if video_dir.is_dir():
+        shutil.rmtree(video_dir)
 
 
 def get_video_file(video_id: UUID, original_filename: str | None) -> pathlib.Path | None:

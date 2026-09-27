@@ -1,15 +1,44 @@
+import json
+import math
 import pathlib
 import re
 import subprocess
 
+from app.config import settings
+
+
+class InvalidVideoError(ValueError):
+    pass
+
 
 def get_duration_seconds(video_path: str) -> float:
     cmd = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", video_path,
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_type:format=duration",
+        "-of", "json", video_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return float(result.stdout.strip())
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=settings.ffprobe_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise InvalidVideoError("Video inspection timed out") from error
+
+    if result.returncode != 0:
+        raise InvalidVideoError("The uploaded file is not a readable video")
+
+    try:
+        payload = json.loads(result.stdout)
+        duration = float(payload["format"]["duration"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise InvalidVideoError("The uploaded video has no readable duration") from error
+
+    if not payload.get("streams") or not math.isfinite(duration) or duration <= 0:
+        raise InvalidVideoError("The uploaded file does not contain a readable video stream")
+    return duration
 
 def extract_keyframes(
     video_path: str,
@@ -35,7 +64,14 @@ def extract_keyframes(
         "-vf", f"select='gt(scene,{scene_threshold})',showinfo",
         "-vsync", "vfr", "-f", "null", "-",
     ]
-    result = subprocess.run(scene_cmd, capture_output=True, text=True)
+    result = subprocess.run(
+        scene_cmd,
+        capture_output=True,
+        text=True,
+        timeout=settings.ffmpeg_timeout_seconds,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("FFmpeg could not scan the video")
     scene_timestamps = [float(m) for m in re.findall(r"pts_time:([\d.]+)", result.stderr)]
     candidates.update(round(ts, 3) for ts in scene_timestamps)
 
@@ -52,11 +88,18 @@ def extract_keyframes(
     # 3. Now actually extract an image at each kept timestamp.
     keyframes = []
     for i, ts in enumerate(kept_timestamps):
-        frame_path = output_path / f"frame_{i:04d}.png"
-        subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(ts), "-i", video_path, "-frames:v", "1", str(frame_path)],
+        frame_path = output_path / f"frame_{i:04d}.jpg"
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
+                "-frames:v", "1", "-vf", "scale=w=min(960\\,iw):h=-2",
+                "-q:v", "3", str(frame_path),
+            ],
             capture_output=True,
+            timeout=settings.frame_extract_timeout_seconds,
         )
+        if result.returncode != 0 or not frame_path.is_file() or frame_path.stat().st_size == 0:
+            raise RuntimeError(f"FFmpeg could not extract the frame at {ts:.3f} seconds")
         keyframes.append((ts, str(frame_path)))
 
     return keyframes

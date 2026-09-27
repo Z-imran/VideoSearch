@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE videos (
+CREATE TABLE IF NOT EXISTS videos (
     id UUID PRIMARY KEY,
     title VARCHAR(200) NOT NULL,
 
@@ -17,7 +17,7 @@ CREATE TABLE videos (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE frames (
+CREATE TABLE IF NOT EXISTS frames (
     id UUID PRIMARY KEY,
     video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
 
@@ -28,7 +28,7 @@ CREATE TABLE frames (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_frames_video_id ON frames (video_id);
+CREATE INDEX IF NOT EXISTS idx_frames_video_id ON frames (video_id);
 
-CREATE INDEX idx_frames_embedding_hnsw ON frames
+CREATE INDEX IF NOT EXISTS idx_frames_embedding_hnsw ON frames
     USING hnsw (embedding vector_cosine_ops);

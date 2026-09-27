@@ -1,29 +1,27 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: videosearch-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: videosearch
-      POSTGRES_PASSWORD: videosearch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: videosearch
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - videosearch_pgdata:/var/lib/postgresql/data
-      - ./backend/db/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U videosearch -d videosearch"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
       start_period: 10s
+
   migrate:
     image: pgvector/pgvector:pg16
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      PGPASSWORD: videosearch
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - ./backend/db/migrations:/migrations:ro
     command:
@@ -31,22 +29,43 @@ services:
       - -c
       - for migration in /migrations/*.sql; do psql -h postgres -U videosearch -d videosearch -v ON_ERROR_STOP=1 -f "$$migration"; done
     restart: "no"
+
   api:
     build:
       context: ./backend
       dockerfile: ../docker/backend.Dockerfile
-    container_name: videosearch-api
-    ports:
-      - "127.0.0.1:8000:8000"
-    volumes:
-      - ./backend:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
     depends_on:
       migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgresql://videosearch:videosearch@postgres:5432/videosearch
+      DATABASE_URL: postgresql://videosearch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/videosearch
+      STORAGE_DIR: /app/storage
       UPLOADS_ENABLED: ${UPLOADS_ENABLED:-true}
+    volumes:
+      - videosearch_media:/app/storage
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        VITE_API_URL: /api
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
   videosearch_pgdata:
+  videosearch_media:
+  caddy_data:
+  caddy_config:

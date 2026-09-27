@@ -1,23 +1,48 @@
-from fastapi import UploadFile
-from app.repositories import video_repository
-from app.storage.local import save_upload
+from datetime import datetime, timedelta, timezone
+
 import pathlib
-from app.repositories import frame_repository
-from app.processing.frame_extractor import extract_keyframes, get_duration_seconds
+
+from fastapi import UploadFile
+
 from app.config import settings
 from app.processing import embedder
+from app.processing.frame_extractor import extract_keyframes, get_duration_seconds
+from app.repositories import frame_repository
+from app.repositories import video_repository
+from app.storage.local import delete_video_files, save_upload
+
+
+class VideoTooLongError(ValueError):
+    pass
+
 
 def create_video_from_upload(file: UploadFile, title: str | None):
     display_title = title or file.filename or "Untitled video"
-    video = video_repository.create_video(
-        title=display_title, source_type="upload", original_filename=file.filename
-    )
-    video_path = save_upload(video["id"], file)
-    return video, video_path
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.temporary_video_ttl_hours)
+    video = None
+    try:
+        video = video_repository.create_temporary_video(
+            title=display_title,
+            source_type="upload",
+            original_filename=file.filename,
+            expires_at=expires_at,
+            max_temporary_videos=settings.max_temporary_videos,
+        )
+        video_path = save_upload(video["id"], file, settings.max_video_bytes)
+        duration = get_duration_seconds(video_path)
+        if duration > settings.max_video_duration_seconds:
+            raise VideoTooLongError("Video exceeds the 3 minute duration limit")
+        video = video_repository.update_video_duration(video["id"], duration)
+        return video, video_path
+    except Exception:
+        if video is not None:
+            delete_video_files(video["id"])
+            video_repository.delete_video(video["id"])
+        raise
 
 
-def get_all_videos():
-    return video_repository.list_videos()
+def get_ready_videos():
+    return video_repository.list_ready_videos()
 
 
 def get_video_by_id(video_id):
@@ -26,9 +51,6 @@ def get_video_by_id(video_id):
 def process_video(video_id: str, video_path: str):
     try:
         video_repository.update_video_status(video_id, "processing")
-
-        duration = get_duration_seconds(video_path)
-        video_repository.update_video_duration(video_id, duration)
 
         frames_dir = pathlib.Path(settings.storage_dir) / video_id / "frames"
         keyframes = extract_keyframes(video_path, str(frames_dir))
@@ -40,5 +62,12 @@ def process_video(video_id: str, video_path: str):
 
         video_repository.update_video_status(video_id, "ready")
     except Exception:
-        video_repository.update_video_status(video_id, "failed")
+        video_repository.mark_video_failed(video_id)
+        delete_video_files(video_id)
         raise
+
+
+def cleanup_expired_videos():
+    for video in video_repository.list_expired_videos():
+        delete_video_files(video["id"])
+        video_repository.delete_video(video["id"])
