@@ -42,6 +42,10 @@ services:
       DATABASE_URL: postgresql://videosearch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/videosearch
       STORAGE_DIR: /app/storage
       UPLOADS_ENABLED: ${UPLOADS_ENABLED:-true}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in .env}
+      AWS_REGION: ${AWS_REGION:-us-west-2}
+      S3_PRESIGNED_URL_SECONDS: ${S3_PRESIGNED_URL_SECONDS:-300}
     volumes:
       - videosearch_media:/app/storage
 

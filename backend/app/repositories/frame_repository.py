@@ -2,14 +2,45 @@ from uuid import uuid4
 from app.db.connection import get_connection
 
 
-def create_frame(video_id, timestamp_seconds, thumbnail_path):
+def create_frame(
+    video_id,
+    timestamp_seconds,
+    thumbnail_path=None,
+    *,
+    storage_key=None,
+    embedding: list[float] | None = None,
+):
+    if not thumbnail_path and not storage_key:
+        raise ValueError("A frame media location is required")
+
     frame_id = uuid4()
     query = """
-        INSERT INTO frames (id, video_id, timestamp_seconds, thumbnail_path)
-        VALUES (%(id)s, %(video_id)s, %(timestamp_seconds)s, %(thumbnail_path)s)
+        INSERT INTO frames (
+            id,
+            video_id,
+            timestamp_seconds,
+            thumbnail_path,
+            storage_key,
+            embedding
+        )
+        VALUES (
+            %(id)s,
+            %(video_id)s,
+            %(timestamp_seconds)s,
+            %(thumbnail_path)s,
+            %(storage_key)s,
+            %(embedding)s
+        )
         RETURNING *;
     """
-    values = {"id": frame_id, "video_id": video_id, "timestamp_seconds": timestamp_seconds, "thumbnail_path": thumbnail_path}
+    values = {
+        "id": frame_id,
+        "video_id": video_id,
+        "timestamp_seconds": timestamp_seconds,
+        "thumbnail_path": thumbnail_path,
+        "storage_key": storage_key,
+        "embedding": embedding,
+    }
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(query, values)
@@ -28,7 +59,8 @@ def list_frames_for_video(video_id):
 
 def get_frame(frame_id):
     query = """
-        SELECT frames.*
+        SELECT frames.*,
+               videos.storage_backend AS storage_backend
         FROM frames
         JOIN videos ON videos.id = frames.video_id
         WHERE frames.id = %(id)s

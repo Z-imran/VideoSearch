@@ -2,7 +2,7 @@ import mimetypes
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from app.services import media_service
 
@@ -11,17 +11,27 @@ router = APIRouter(prefix="/media", tags=["media"])
 
 @router.get("/videos/{video_id}")
 def serve_video(video_id: UUID):
-    video_path = media_service.find_video_file(video_id)
-    if video_path is None:
+    location = media_service.resolve_video_media(video_id)
+    if location is None:
         raise HTTPException(status_code=404, detail="Video file not found")
-    media_type, _ = mimetypes.guess_type(video_path.name)
-    return FileResponse(video_path, media_type=media_type or "application/octet-stream")
+    if location.redirect_url is not None:
+        return RedirectResponse(location.redirect_url)
+    if location.local_path is None:
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    media_type, _ = mimetypes.guess_type(location.local_path.name)
+    return FileResponse(location.local_path, media_type=media_type or "application/octet-stream")
 
 
 @router.get("/frames/{frame_id}")
 def serve_frame(frame_id: UUID):
-    frame_path = media_service.find_frame_file(frame_id)
-    if frame_path is None:
+    location = media_service.resolve_frame_media(frame_id)
+    if location is None:
         raise HTTPException(status_code=404, detail="Frame image not found")
-    media_type, _ = mimetypes.guess_type(frame_path.name)
-    return FileResponse(frame_path, media_type=media_type or "image/png")
+    if location.redirect_url is not None:
+        return RedirectResponse(location.redirect_url)
+    if location.local_path is None:
+        raise HTTPException(status_code=404, detail="Frame image not found")
+
+    media_type, _ = mimetypes.guess_type(location.local_path.name)
+    return FileResponse(location.local_path, media_type=media_type or "image/png")
